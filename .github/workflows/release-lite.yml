@@ -90,6 +90,10 @@ jobs:
           else
             VERSION="${GITHUB_REF#refs/tags/}"
           fi
+          if [ "${VERSION}" = "${GITHUB_REF}" ] || [[ "${VERSION}" == */* ]]; then
+            VERSION="$(cat VERSION 2>/dev/null || echo dev)"
+          fi
+          VERSION="${VERSION//\//-}"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "Building ${VERSION} for ${{ matrix.goos }}/${{ matrix.goarch }}"
 
@@ -200,6 +204,10 @@ jobs:
           else
             VERSION="${GITHUB_REF#refs/tags/}"
           fi
+          if [ "${VERSION}" = "${GITHUB_REF}" ] || [[ "${VERSION}" == */* ]]; then
+            VERSION="$(cat VERSION 2>/dev/null || echo dev)"
+          fi
+          VERSION="${VERSION//\//-}"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Pre-compile Go packages (Windows)
@@ -234,6 +242,12 @@ jobs:
             NSIS_FLAG="-nsis"
           fi
 
+          # Windows runners check this repo out with CRLF line endings, which
+          # leaves a trailing \r on the tsv checksum column and trips the
+          # 64-hex validation inside check-license-bundle.sh.
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            sed -i 's/\r$//' licenses/sources/modules.tsv
+          fi
           bash ./scripts/check-license-bundle.sh
           cd cmd/desktop
           wails build -clean \
@@ -346,6 +360,10 @@ jobs:
           else
             VERSION="${GITHUB_REF#refs/tags/}"
           fi
+          if [ "${VERSION}" = "${GITHUB_REF}" ] || [[ "${VERSION}" == */* ]]; then
+            VERSION="$(cat VERSION 2>/dev/null || echo dev)"
+          fi
+          VERSION="${VERSION//\//-}"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Generate release notes
@@ -431,6 +449,10 @@ jobs:
           else
             VERSION="${GITHUB_REF#refs/tags/}"
           fi
+          if [ "${VERSION}" = "${GITHUB_REF}" ] || [[ "${VERSION}" == */* ]]; then
+            VERSION="$(cat VERSION 2>/dev/null || echo dev)"
+          fi
+          VERSION="${VERSION//\//-}"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Wait for release assets to be available
