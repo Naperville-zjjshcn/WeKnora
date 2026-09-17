@@ -195,6 +195,19 @@ jobs:
         if: runner.os == 'Windows'
         run: choco install nsis -y
 
+      # sqlite-vec-go-bindings #includes "sqlite3.h" but does not vendor it, so
+      # point CGO at the amalgamation headers from mattn/go-sqlite3 (this mirrors
+      # the upstream recipe that produced the last successful Windows build).
+      - name: Prepare SQLite headers (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          HEADER_DIR="${GITHUB_WORKSPACE}/_sqlite_headers"
+          mkdir -p "${HEADER_DIR}"
+          curl -sL "https://raw.githubusercontent.com/mattn/go-sqlite3/v1.14.22/sqlite3-binding.h" -o "${HEADER_DIR}/sqlite3.h"
+          curl -sL "https://raw.githubusercontent.com/mattn/go-sqlite3/v1.14.22/sqlite3ext.h" -o "${HEADER_DIR}/sqlite3ext.h"
+          echo "SQLITE_HEADER_DIR=${HEADER_DIR}" >> $GITHUB_ENV
+
       - name: Resolve version
         id: ver
         shell: bash
@@ -221,7 +234,7 @@ jobs:
           # passes on windows-latest with Go 1.25/1.26, so pin to that commit.
           go get github.com/yanyiwu/gojieba@a487e26092
           export GOLANG_PROTOBUF_REGISTRATION_CONFLICT=warn
-          export CGO_CFLAGS="-Wno-deprecated-declarations"
+          export CGO_CFLAGS="-Wno-deprecated-declarations ${SQLITE_HEADER_DIR:+-I${SQLITE_HEADER_DIR}}"
           cd cmd/desktop
           go build -p 1 -buildvcs=false -tags "desktop,sqlite_fts5,production" -o _prebuild_tmp.exe . || true
           rm -f _prebuild_tmp.exe
@@ -233,7 +246,7 @@ jobs:
           export GOLANG_PROTOBUF_REGISTRATION_CONFLICT=warn
           eval "$(./scripts/get_version.sh env)"
           LDFLAGS="$(./scripts/get_version.sh ldflags) -X 'google.golang.org/protobuf/reflect/protoregistry.conflictPolicy=warn'"
-          export CGO_CFLAGS="-Wno-deprecated-declarations"
+          export CGO_CFLAGS="-Wno-deprecated-declarations ${SQLITE_HEADER_DIR:+-I${SQLITE_HEADER_DIR}}"
 
           BUILD_TAGS="sqlite_fts5"
           NSIS_FLAG=""
