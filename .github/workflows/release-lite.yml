@@ -1,14 +1,14 @@
 name: Release Lite Binaries
 
 on:
-  # push:
-  #   tags:
-  #     - "v*"
+    push:
+      branches:
+        - main
   workflow_dispatch:
     inputs:
       tag:
         description: "Release tag (e.g. v0.2.0)"
-        required: true
+        required: false
 
 concurrency:
   group: release-lite-${{ github.ref }}
