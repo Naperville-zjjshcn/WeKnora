@@ -1,9 +1,9 @@
 name: Release Lite Binaries
 
 on:
-    push:
-      branches:
-        - main
+  push:
+    branches:
+      - main
   workflow_dispatch:
     inputs:
       tag:
@@ -18,7 +18,7 @@ permissions:
   contents: write
 
 env:
-    GO_VERSION: "1.26"
+  GO_VERSION: "1.26"
   NODE_VERSION: "22"
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
