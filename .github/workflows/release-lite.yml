@@ -193,7 +193,17 @@ jobs:
 
       - name: Install NSIS (Windows)
         if: runner.os == 'Windows'
-        run: choco install nsis -y
+        shell: pwsh
+        run: |
+          choco install nsis -y
+          # The runner agent snapshots the environment at job start, so the PATH
+          # that the NSIS installer writes never reaches later steps. Publish
+          # the directory via GITHUB_PATH explicitly; otherwise `wails build
+          # -nsis` hits "Warning: Cannot create installer: makensis not found",
+          # silently skips the installer, and Package Windows app fails on the
+          # missing file.
+          Add-Content $env:GITHUB_PATH "C:\Program Files (x86)\NSIS"
+          & "C:\Program Files (x86)\NSIS\makensis.exe" /VERSION
 
       # sqlite-vec-go-bindings #includes "sqlite3.h" but does not vendor it, so
       # point CGO at the amalgamation headers from mattn/go-sqlite3 (this mirrors
@@ -285,6 +295,12 @@ jobs:
             -ldflags="${LDFLAGS}" \
             -o "WeKnora Lite"
 
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            # Diagnostic: show what actually landed in bin/ (installer present
+            # or not) so a missing installer is visible in this step's log.
+            ls -la build/bin/
+          fi
+
       # ── macOS: bundle .app with resources, then create DMG ──
       - name: Package macOS app
         if: runner.os == 'macOS'
@@ -349,11 +365,17 @@ jobs:
         shell: bash
         run: |
           ARCHIVE="WeKnora-Lite-App_${{ steps.ver.outputs.version }}_${{ matrix.arch_label }}"
-          INSTALLER="cmd/desktop/build/bin/WeKnora Lite-amd64-installer.exe"
+          # Wails names the installer after the wails.json project name
+          # ("WeKnora Lite", with a space) -> "WeKnora Lite-amd64-installer.exe".
+          INSTALLER="$(ls "cmd/desktop/build/bin/"*-amd64-installer.exe 2>/dev/null | head -n 1)"
           # Do not publish a bare executable if NSIS was unavailable: the
           # installer also carries the notices/source and supports auto-update.
-          test -f "$INSTALLER"
-          cp "$INSTALLER" "${ARCHIVE}_setup.exe"
+          if [ -z "${INSTALLER}" ]; then
+            echo "No NSIS installer found in cmd/desktop/build/bin/:" >&2
+            ls -la cmd/desktop/build/bin/ >&2 || true
+            exit 1
+          fi
+          cp "${INSTALLER}" "${ARCHIVE}_setup.exe"
           sha256sum "${ARCHIVE}_setup.exe" > "${ARCHIVE}_setup.exe.sha256"
 
       # ── Windows: ship the jieba dictionaries next to the executable ──
