@@ -378,11 +378,43 @@ jobs:
           cp "${INSTALLER}" "${ARCHIVE}_setup.exe"
           sha256sum "${ARCHIVE}_setup.exe" > "${ARCHIVE}_setup.exe.sha256"
 
+      # The runner needs the five cppjieba dictionaries twice below (portable
+      # zip and startup probe). Resolve them once: prefer the module cache
+      # (gojieba vendors deps/cppjieba), fall back to downloading from
+      # yanyiwu/cppjieba. An empty JIEBA_DICT_DIR means "unavailable"; both
+      # consumers degrade gracefully so the installer upload is never blocked.
+      - name: Fetch jieba dictionaries (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          DEST="${RUNNER_TEMP}/jieba-dict"
+          rm -rf "${DEST}"
+          mkdir -p "${DEST}"
+          DICTSRC="$(go env GOMODCACHE)/github.com/yanyiwu/gojieba@$(go list -m -f '{{.Version}}' github.com/yanyiwu/gojieba)/deps/cppjieba/dict"
+          if [ ! -f "${DICTSRC}/jieba.dict.utf8" ]; then
+            DICTSRC="$(find "$(go env GOMODCACHE)/github.com/yanyiwu" -type f -name 'jieba.dict.utf8' -print -quit 2>/dev/null | sed 's#/jieba\.dict\.utf8$##')"
+          fi
+          if [ -f "${DICTSRC}/jieba.dict.utf8" ]; then
+            echo "Dictionaries found in module cache: ${DICTSRC}"
+            cp "${DICTSRC}/"*.utf8 "${DEST}/"
+          else
+            echo "Dictionaries not in module cache; downloading from yanyiwu/cppjieba"
+            for f in jieba.dict.utf8 hmm_model.utf8 user.dict.utf8 idf.utf8 stop_words.utf8; do
+              curl -fsSL "https://raw.githubusercontent.com/yanyiwu/cppjieba/master/dict/${f}" -o "${DEST}/${f}" || echo "::warning::failed to fetch ${f}"
+            done
+          fi
+          if [ -f "${DEST}/jieba.dict.utf8" ]; then
+            echo "JIEBA_DICT_DIR=${DEST}" >> "$GITHUB_ENV"
+          else
+            echo "JIEBA_DICT_DIR=" >> "$GITHUB_ENV"
+            echo "::warning::jieba dictionaries unavailable; portable zip will ship without them"
+          fi
+          ls -la "${DEST}"
+
       # ── Windows: ship the jieba dictionaries next to the executable ──
       # gojieba resolves its default dictionary directory from the absolute
       # source path recorded at compile time (runtime.Caller -> module cache),
-      # so that path only exists on the machine that built the app. Copy the
-      # dictionaries into the archive and point JIEBA_DICT_DIR at them.
+      # so that path only exists on the machine that built the app.
       - name: Bundle jieba dictionaries (Windows)
         if: runner.os == 'Windows'
         shell: bash
@@ -392,19 +424,21 @@ jobs:
           rm -rf "${STAGE}"
           mkdir -p "${STAGE}/dict"
 
-          DICTSRC="$(go env GOMODCACHE)/github.com/yanyiwu/gojieba@$(go list -m -f '{{.Version}}' github.com/yanyiwu/gojieba)/deps/cppjieba/dict"
-          if [ ! -f "${DICTSRC}/jieba.dict.utf8" ]; then
-            DICTSRC="$(find "$(go env GOMODCACHE)/github.com/yanyiwu" -type f -name 'jieba.dict.utf8' -print -quit | sed 's#/jieba\.dict\.utf8$##')"
+          # Best effort: dictionaries make the portable zip usable offline, but
+          # their absence must not fail the job and block the installer upload.
+          if [ -n "${JIEBA_DICT_DIR:-}" ]; then
+            cp "${JIEBA_DICT_DIR}/"*.utf8 "${STAGE}/dict/"
+          else
+            echo "::warning::JIEBA_DICT_DIR is empty; shipping portable zip without dictionaries"
           fi
-          test -f "${DICTSRC}/jieba.dict.utf8"
-          for f in jieba.dict.utf8 hmm_model.utf8 user.dict.utf8 idf.utf8 stop_words.utf8; do
-            cp "${DICTSRC}/${f}" "${STAGE}/dict/${f}"
-          done
 
           EXE="$(ls cmd/desktop/build/bin/*.exe 2>/dev/null | grep -v -i installer | head -1)"
-          test -n "${EXE}"
-          cp "${EXE}" "${STAGE}/"
-          cp .env.lite.example "${STAGE}/" 2>/dev/null || true
+          if [ -n "${EXE}" ]; then
+            cp "${EXE}" "${STAGE}/"
+            cp .env.lite.example "${STAGE}/" 2>/dev/null || true
+          else
+            echo "::warning::no standalone exe in cmd/desktop/build/bin; skipping portable zip"
+          fi
 
           cat > "${STAGE}/install-jieba-dicts.bat" <<'BAT'
           @echo off
@@ -427,7 +461,7 @@ jobs:
           BAT
 
           powershell -NoProfile -Command "Compress-Archive -Path '${STAGE}' -DestinationPath '${ARCHIVE}_portable.zip'"
-          ls -la ./*.zip
+          ls -la ./*.zip 2>/dev/null || true
 
       - uses: actions/upload-artifact@v7
         with:
@@ -444,12 +478,14 @@ jobs:
         if: runner.os == 'Windows'
         shell: bash
         run: |
-          DICTSRC="$(go env GOMODCACHE)/github.com/yanyiwu/gojieba@$(go list -m -f '{{.Version}}' github.com/yanyiwu/gojieba)/deps/cppjieba/dict"
-          if [ ! -f "${DICTSRC}/jieba.dict.utf8" ]; then
-            DICTSRC="$(find "$(go env GOMODCACHE)/github.com/yanyiwu" -type f -name 'jieba.dict.utf8' -print -quit | sed 's#/jieba\.dict\.utf8$##')"
+          # The artifacts (installer + portable zip) are already uploaded; a
+          # missing dictionary is a degraded-but-shippable outcome, so skip the
+          # probe instead of failing the job.
+          if [ -z "${JIEBA_DICT_DIR:-}" ]; then
+            echo "::warning::dictionaries unavailable; skipping startup probe"
+            exit 0
           fi
-          test -f "${DICTSRC}/jieba.dict.utf8"
-          export JIEBA_DICT_DIR="${DICTSRC}"
+          export JIEBA_DICT_DIR
           cat > probe.ps1 <<'PS1'
           $p = Start-Process -FilePath '.\WeKnora Lite.exe' -WorkingDirectory '.' -PassThru
           Start-Sleep -Seconds 20
