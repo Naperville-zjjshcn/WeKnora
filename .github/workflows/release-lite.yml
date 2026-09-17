@@ -23,7 +23,7 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
-  # ── 1. Build frontend once, share as artifact (for Web CLI) ──
+  # 鈹€鈹€ 1. Build frontend once, share as artifact (for Web CLI) 鈹€鈹€
   build-frontend:
     runs-on: ubuntu-latest
     steps:
@@ -47,7 +47,7 @@ jobs:
           path: frontend/dist/
           retention-days: 1
 
-  # ── 2a. Build Web CLI binary per platform (native CGO) ──
+  # 鈹€鈹€ 2a. Build Web CLI binary per platform (native CGO) 鈹€鈹€
   build-binary:
     needs: build-frontend
     strategy:
@@ -139,7 +139,7 @@ jobs:
             WeKnora-lite_*.tar.gz.sha256
           retention-days: 3
 
-  # ── 2b. Build Desktop APP per platform (Wails) ──
+  # 鈹€鈹€ 2b. Build Desktop APP per platform (Wails) 鈹€鈹€
   build-desktop-app:
     strategy:
       fail-fast: false
@@ -214,6 +214,12 @@ jobs:
         if: runner.os == 'Windows'
         shell: bash
         run: |
+          # gojieba v1.4.7 (vendored cppjieba ~v5.6.5) segfaults inside
+          # NewJieba() on the current windows-latest image
+          # (0xc0000005 in _Cfunc_NewJieba during bindings generation).
+          # gojieba master (a487e26092) vendors cppjieba v5.6.7 and its own CI
+          # passes on windows-latest with Go 1.25/1.26, so pin to that commit.
+          go get github.com/yanyiwu/gojieba@a487e26092
           export GOLANG_PROTOBUF_REGISTRATION_CONFLICT=warn
           export CGO_CFLAGS="-Wno-deprecated-declarations"
           cd cmd/desktop
@@ -238,8 +244,16 @@ jobs:
           if [ "${{ runner.os }}" = "macOS" ]; then
             export CGO_LDFLAGS="-Wl,-no_warn_duplicate_libraries"
           fi
+          # Wails regenerates bindings by building and briefly *running* the app
+          # under `-tags bindings`. On the Windows runner that short-lived process
+          # dies with 0xc0000005 inside cgo, which aborts the whole build.
+          # Nothing needs regenerating here: both the JS bindings
+          # (frontend/src/wailsjs) and the Go bindings entrypoint
+          # (cmd/desktop/main_bindings.go) are committed in the repository.
+          SKIP_BINDINGS_FLAG=""
           if [ "${{ runner.os }}" = "Windows" ]; then
             NSIS_FLAG="-nsis"
+            SKIP_BINDINGS_FLAG="-skipbindings"
           fi
 
           # Windows runners check this repo out with CRLF line endings, which
@@ -251,13 +265,14 @@ jobs:
           bash ./scripts/check-license-bundle.sh
           cd cmd/desktop
           wails build -clean \
+            ${SKIP_BINDINGS_FLAG} \
             -tags "${BUILD_TAGS}" \
             -platform "${{ matrix.platform }}" \
             ${NSIS_FLAG} \
             -ldflags="${LDFLAGS}" \
             -o "WeKnora Lite"
 
-      # ── macOS: bundle .app with resources, then create DMG ──
+      # 鈹€鈹€ macOS: bundle .app with resources, then create DMG 鈹€鈹€
       - name: Package macOS app
         if: runner.os == 'macOS'
         run: |
@@ -293,7 +308,7 @@ jobs:
 
           shasum -a 256 "${DMG_NAME}.dmg" > "${DMG_NAME}.dmg.sha256"
 
-      # ── Linux: package tarball ──
+      # 鈹€鈹€ Linux: package tarball 鈹€鈹€
       - name: Package Linux app
         if: runner.os == 'Linux'
         run: |
@@ -315,7 +330,7 @@ jobs:
           tar czf "${ARCHIVE}.tar.gz" "${ARCHIVE}"
           shasum -a 256 "${ARCHIVE}.tar.gz" > "${ARCHIVE}.tar.gz.sha256"
 
-      # ── Windows: NSIS installer includes licenses and corresponding source ──
+      # 鈹€鈹€ Windows: NSIS installer includes licenses and corresponding source 鈹€鈹€
       - name: Package Windows app
         if: runner.os == 'Windows'
         shell: bash
@@ -328,6 +343,57 @@ jobs:
           cp "$INSTALLER" "${ARCHIVE}_setup.exe"
           sha256sum "${ARCHIVE}_setup.exe" > "${ARCHIVE}_setup.exe.sha256"
 
+      # 鈹€鈹€ Windows: ship the jieba dictionaries next to the executable 鈹€鈹€
+      # gojieba resolves its default dictionary directory from the absolute
+      # source path recorded at compile time (runtime.Caller -> module cache),
+      # so that path only exists on the machine that built the app. Copy the
+      # dictionaries into the archive and point JIEBA_DICT_DIR at them.
+      - name: Bundle jieba dictionaries (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          ARCHIVE="WeKnora-Lite-App_${{ steps.ver.outputs.version }}_${{ matrix.arch_label }}"
+          STAGE="${ARCHIVE}_portable"
+          rm -rf "${STAGE}"
+          mkdir -p "${STAGE}/dict"
+
+          DICTSRC="$(go env GOMODCACHE)/github.com/yanyiwu/gojieba@$(go list -m -f '{{.Version}}' github.com/yanyiwu/gojieba)/deps/cppjieba/dict"
+          if [ ! -f "${DICTSRC}/jieba.dict.utf8" ]; then
+            DICTSRC="$(find "$(go env GOMODCACHE)/github.com/yanyiwu" -type f -name 'jieba.dict.utf8' -print -quit | sed 's#/jieba\.dict\.utf8$##')"
+          fi
+          test -f "${DICTSRC}/jieba.dict.utf8"
+          for f in jieba.dict.utf8 hmm_model.utf8 user.dict.utf8 idf.utf8 stop_words.utf8; do
+            cp "${DICTSRC}/${f}" "${STAGE}/dict/${f}"
+          done
+
+          EXE="$(ls cmd/desktop/build/bin/*.exe 2>/dev/null | grep -v -i installer | head -1)"
+          test -n "${EXE}"
+          cp "${EXE}" "${STAGE}/"
+          cp .env.lite.example "${STAGE}/" 2>/dev/null || true
+
+          cat > "${STAGE}/install-jieba-dicts.bat" <<'BAT'
+          @echo off
+          setlocal
+          set "SRC=%~dp0dict"
+          set "DST=%LOCALAPPDATA%\WeKnoraLite\dict"
+          if not exist "%DST%" mkdir "%DST%"
+          copy /Y "%SRC%\*" "%DST%\" >nul
+          setx JIEBA_DICT_DIR "%DST%"
+          echo Dictionaries installed to %DST%.
+          echo If WeKnora Lite was already running, close it and start it again.
+          pause
+          BAT
+
+          cat > "${STAGE}/launch.bat" <<'BAT'
+          @echo off
+          setlocal
+          set "JIEBA_DICT_DIR=%~dp0dict"
+          start "" "%~dp0WeKnora Lite.exe"
+          BAT
+
+          powershell -NoProfile -Command "Compress-Archive -Path '${STAGE}' -DestinationPath '${ARCHIVE}_portable.zip'"
+          ls -la ./*.zip
+
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact_name }}
@@ -335,7 +401,36 @@ jobs:
             WeKnora-Lite-App_*
           retention-days: 3
 
-  # ── 3. Create GitHub Release ──
+      # 鈹€鈹€ Windows: smoke-test the produced executable 鈹€鈹€
+      # The app initialises gojieba at package init, i.e. before anything else
+      # happens. If that survives, the binary is usable. Kept last so the
+      # artifacts above are still uploaded when this fails.
+      - name: Probe desktop app startup (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          DICTSRC="$(go env GOMODCACHE)/github.com/yanyiwu/gojieba@$(go list -m -f '{{.Version}}' github.com/yanyiwu/gojieba)/deps/cppjieba/dict"
+          if [ ! -f "${DICTSRC}/jieba.dict.utf8" ]; then
+            DICTSRC="$(find "$(go env GOMODCACHE)/github.com/yanyiwu" -type f -name 'jieba.dict.utf8' -print -quit | sed 's#/jieba\.dict\.utf8$##')"
+          fi
+          test -f "${DICTSRC}/jieba.dict.utf8"
+          export JIEBA_DICT_DIR="${DICTSRC}"
+          cat > probe.ps1 <<'PS1'
+          $p = Start-Process -FilePath '.\WeKnora Lite.exe' -WorkingDirectory '.' -PassThru
+          Start-Sleep -Seconds 20
+          if ($p.HasExited) {
+            Write-Output ("PROBE_RESULT=exited_early code=" + $p.ExitCode)
+            exit 1
+          }
+          Stop-Process -Id $p.Id -Force
+          Write-Output "PROBE_RESULT=alive_after_20s"
+          exit 0
+          PS1
+          cp probe.ps1 cmd/desktop/build/bin/probe.ps1
+          cd cmd/desktop/build/bin
+          powershell -NoProfile -ExecutionPolicy Bypass -File probe.ps1
+
+  # 鈹€鈹€ 3. Create GitHub Release 鈹€鈹€
   release:
     needs: [build-binary, build-desktop-app]
     runs-on: ubuntu-latest
@@ -372,31 +467,29 @@ jobs:
           cat > notes.md << 'NOTES'
           ## WeKnora Lite ${{ steps.ver.outputs.version }}
 
-          ### Web CLI 版（命令行 / 服务器部署）
+          ### Web CLI 鐗堬紙鍛戒护琛?/ 鏈嶅姟鍣ㄩ儴缃诧級
 
-          单二进制部署，零外部依赖（无需 Docker / PostgreSQL / Redis）。
-
+          鍗曚簩杩涘埗閮ㄧ讲锛岄浂澶栭儴渚濊禆锛堟棤闇€ Docker / PostgreSQL / Redis锛夈€?
           ```bash
-          # 1. 解压
+          # 1. 瑙ｅ帇
           tar xzf WeKnora-lite_${{ steps.ver.outputs.version }}_<os>_<arch>.tar.gz
           cd WeKnora-lite_${{ steps.ver.outputs.version }}_<os>_<arch>
 
-          # 2. 配置
+          # 2. 閰嶇疆
           cp .env.lite.example .env.lite
-          # 编辑 .env.lite，至少确认 OLLAMA_BASE_URL 正确
+          # 缂栬緫 .env.lite锛岃嚦灏戠‘璁?OLLAMA_BASE_URL 姝ｇ‘
 
-          # 3. 启动 Ollama（如尚未运行）
-          ollama serve &
+          # 3. 鍚姩 Ollama锛堝灏氭湭杩愯锛?          ollama serve &
           ollama pull qwen2.5:7b
           ollama pull nomic-embed-text
 
-          # 4. 运行
+          # 4. 杩愯
           set -a && source .env.lite && set +a
           ./WeKnora-lite
-          # 访问 http://localhost:8080
+          # 璁块棶 http://localhost:8080
           ```
 
-          | 文件 | 平台 |
+          | 鏂囦欢 | 骞冲彴 |
           |------|------|
           | `WeKnora-lite_*_linux_amd64.tar.gz` | Linux x86_64 |
           | `WeKnora-lite_*_linux_arm64.tar.gz` | Linux ARM64 |
@@ -405,20 +498,18 @@ jobs:
 
           ---
 
-          ### 桌面 APP 版（开箱即用，无需命令行）
+          ### 妗岄潰 APP 鐗堬紙寮€绠卞嵆鐢紝鏃犻渶鍛戒护琛岋級
 
-          原生桌面应用，内置 Web 服务，双击即可运行。
-
-          | 文件 | 平台 |
+          鍘熺敓妗岄潰搴旂敤锛屽唴缃?Web 鏈嶅姟锛屽弻鍑诲嵆鍙繍琛屻€?
+          | 鏂囦欢 | 骞冲彴 |
           |------|------|
           | `WeKnora-Lite-App_*_macOS_universal.dmg` | macOS (Intel + Apple Silicon) |
           | `WeKnora-Lite-App_*_macOS_amd64.dmg` | macOS Intel |
           | `WeKnora-Lite-App_*_macOS_arm64.dmg` | macOS Apple Silicon |
           | `WeKnora-Lite-App_*_linux_amd64.tar.gz` | Linux x86_64 |
-          | `WeKnora-Lite-App_*_windows_amd64_setup.exe` | Windows x86_64 (安装包) |
+          | `WeKnora-Lite-App_*_windows_amd64_setup.exe` | Windows x86_64 (瀹夎鍖? |
 
-          详细文档见 [LITE.md](docs/LITE.md)。
-          NOTES
+          璇︾粏鏂囨。瑙?[LITE.md](docs/LITE.md)銆?          NOTES
 
       - name: Create release
         env:
@@ -431,7 +522,7 @@ jobs:
             WeKnora-lite_*.tar.gz.sha256 \
             WeKnora-Lite-App_* || true
 
-  # ── 4. Update Homebrew Formula ──
+  # 鈹€鈹€ 4. Update Homebrew Formula 鈹€鈹€
   update-homebrew:
     needs: release
     runs-on: ubuntu-latest
