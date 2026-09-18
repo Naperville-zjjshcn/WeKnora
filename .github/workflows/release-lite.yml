@@ -417,8 +417,17 @@ jobs:
       # so that path only exists on the machine that built the app.
       - name: Bundle jieba dictionaries (Windows)
         if: runner.os == 'Windows'
+        # Optional deliverable. Anything failing here (missing dictionaries, no
+        # standalone exe, Compress-Archive quirks) must not fail the job: the
+        # NSIS installer is already built at this point, and a failed job makes
+        # upload-artifact skip, throwing away the installer we came for.
+        continue-on-error: true
         shell: bash
         run: |
+          # GitHub's bash wrapper runs with `-eo pipefail`, so a pipeline whose
+          # last grep matches nothing (exit 1) aborts the whole step even inside
+          # a command substitution. None of this is load bearing.
+          set +e
           ARCHIVE="WeKnora-Lite-App_${{ steps.ver.outputs.version }}_${{ matrix.arch_label }}"
           STAGE="${ARCHIVE}_portable"
           rm -rf "${STAGE}"
@@ -432,7 +441,7 @@ jobs:
             echo "::warning::JIEBA_DICT_DIR is empty; shipping portable zip without dictionaries"
           fi
 
-          EXE="$(ls cmd/desktop/build/bin/*.exe 2>/dev/null | grep -v -i installer | head -1)"
+          EXE="$(ls cmd/desktop/build/bin/*.exe 2>/dev/null | grep -v -i installer | head -1 || true)"
           if [ -n "${EXE}" ]; then
             cp "${EXE}" "${STAGE}/"
             cp .env.lite.example "${STAGE}/" 2>/dev/null || true
@@ -476,6 +485,9 @@ jobs:
       # artifacts above are still uploaded when this fails.
       - name: Probe desktop app startup (Windows)
         if: runner.os == 'Windows'
+        # Diagnostic only: it runs after the upload, but keep it non-fatal so a
+        # flaky startup can never turn a green release into a red one.
+        continue-on-error: true
         shell: bash
         run: |
           # The artifacts (installer + portable zip) are already uploaded; a
