@@ -459,8 +459,9 @@ jobs:
 
             # Runtime payload the NSIS installer does not carry. Without these
             # the app either panics at startup (.env: "unsupported database
-            # driver:") or opens on a 401 JSON page (web/) or cannot find its
-            # prompt templates (config/).
+            # driver:"), opens on a 401 JSON page (web/), cannot find its
+            # prompt templates (config/) or runs against a database that has
+            # no tables at all (migrations/).
             cp .env.lite.example "${STAGE}/.env" 2>/dev/null || true
             if [ -d web ] && [ -f web/index.html ]; then
               cp -r web "${STAGE}/web"
@@ -469,6 +470,16 @@ jobs:
             fi
             if [ -d config ]; then
               cp -r config "${STAGE}/config"
+            fi
+            # Without the migration SQL the database is created but never
+            # gets a single table, and every request then fails with
+            # "no such table: ..." - surfacing in the UI as
+            # "fail to create workspace" on the first registration.
+            if [ -d migrations/sqlite ]; then
+              mkdir -p "${STAGE}/migrations/sqlite"
+              cp -r migrations/sqlite/* "${STAGE}/migrations/sqlite/"
+            else
+              echo "::warning::migrations/sqlite missing; database will have no tables"
             fi
             mkdir -p "${STAGE}/data"
           else
