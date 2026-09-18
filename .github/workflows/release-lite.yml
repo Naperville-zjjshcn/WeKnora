@@ -182,6 +182,18 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
+      # The Lite desktop app serves its own UI from "./web", resolved against
+      # the process working directory (internal/router/static.go ->
+      # serveFrontendStatic). If that directory is missing the handler is never
+      # registered, every request falls through to the JSON API and the window
+      # renders a bare `{"error":"Unauthorized: missing authentication"}`.
+      # The NSIS installer only ships the executable, so the portable bundle
+      # below is what carries the UI - pull the built frontend in here.
+      - uses: actions/download-artifact@v8
+        with:
+          name: frontend-dist
+          path: web/
+
       - name: Install Wails CLI
         run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
 
@@ -415,7 +427,7 @@ jobs:
       # gojieba resolves its default dictionary directory from the absolute
       # source path recorded at compile time (runtime.Caller -> module cache),
       # so that path only exists on the machine that built the app.
-      - name: Bundle jieba dictionaries (Windows)
+      - name: Package Windows portable bundle
         if: runner.os == 'Windows'
         # Optional deliverable. Anything failing here (missing dictionaries, no
         # standalone exe, Compress-Archive quirks) must not fail the job: the
@@ -444,7 +456,21 @@ jobs:
           EXE="$(ls cmd/desktop/build/bin/*.exe 2>/dev/null | grep -v -i installer | head -1 || true)"
           if [ -n "${EXE}" ]; then
             cp "${EXE}" "${STAGE}/"
-            cp .env.lite.example "${STAGE}/" 2>/dev/null || true
+
+            # Runtime payload the NSIS installer does not carry. Without these
+            # the app either panics at startup (.env: "unsupported database
+            # driver:") or opens on a 401 JSON page (web/) or cannot find its
+            # prompt templates (config/).
+            cp .env.lite.example "${STAGE}/.env" 2>/dev/null || true
+            if [ -d web ] && [ -f web/index.html ]; then
+              cp -r web "${STAGE}/web"
+            else
+              echo "::warning::frontend-dist missing; portable bundle will start without a UI"
+            fi
+            if [ -d config ]; then
+              cp -r config "${STAGE}/config"
+            fi
+            mkdir -p "${STAGE}/data"
           else
             echo "::warning::no standalone exe in cmd/desktop/build/bin; skipping portable zip"
           fi
@@ -465,6 +491,9 @@ jobs:
           cat > "${STAGE}/launch.bat" <<'BAT'
           @echo off
           setlocal
+          rem "./web", "./config" and ".env" are resolved against the current
+          rem directory, so always start from the folder holding this script.
+          cd /d "%~dp0"
           set "JIEBA_DICT_DIR=%~dp0dict"
           start "" "%~dp0WeKnora Lite.exe"
           BAT
@@ -594,6 +623,11 @@ jobs:
           | `WeKnora-Lite-App_*_macOS_arm64.dmg` | macOS Apple Silicon |
           | `WeKnora-Lite-App_*_linux_amd64.tar.gz` | Linux x86_64 |
           | `WeKnora-Lite-App_*_windows_amd64_setup.exe` | Windows x86_64 (安装包) |
+          | `WeKnora-Lite-App_*_windows_amd64_portable.zip` | Windows x86_64 (绿色版，解压即用) |
+
+          **Windows 用户请用绿色版（portable zip）。** 安装包只安装可执行文件本体；
+          界面（`web/`）、配置（`config/`）和 `.env` 需要和应用放在同一目录，
+          绿色版已经全部打包好，解压后双击 `launch.bat` 即可。
 
           详细文档见 [LITE.md](docs/LITE.md)。
           NOTES
